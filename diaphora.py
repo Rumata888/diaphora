@@ -532,7 +532,6 @@ class CDiffGraphViewer(GraphViewer):
       else:
         colour = 0xFFFFFF
       ret = []
-      log( rows[0])
       for row in rows:
         ret.append(row[2])
       label = "loc_"+"0x%X"%(int(ea)+rows[0][3])+":\n"+"\n".join(ret)
@@ -1802,7 +1801,6 @@ The structure of returned tuple: (name, nodes, edges, indegree, outdegree, size,
            from %s.imageinfo ii"""%db
     cur.execute(sql)
     base_addr=cur.fetchone()[0]
-    log(base_addr)
     sql = """ select bb.address, ins.address, ins.mnemonic, ins.disasm
                 from %s.function_bblocks fb,
                      %s.bb_instructions bbins,
