@@ -1,3 +1,4 @@
+
 #!/usr/bin/python
 
 """
@@ -531,9 +532,10 @@ class CDiffGraphViewer(GraphViewer):
       else:
         colour = 0xFFFFFF
       ret = []
+      log( rows[0])
       for row in rows:
         ret.append(row[2])
-      label = "\n".join(ret)
+      label = "loc_"+"0x%X"%(int(ea)+rows[0][3])+":\n"+"\n".join(ret)
       return (label, colour)
     except:
       print "GraphViewer.OnGetText:", sys.exc_info()[1]
@@ -588,17 +590,17 @@ td.diff_header {text-align:right}
 #-----------------------------------------------------------------------
 class CBinDiff:
   def __init__(self, db_name):
-    self.names = dict(Names())
-    self.primes = primes(1024*1024)
-    self.db_name = db_name
-    self.open_db()
+    self.names = dict(Names())      # A list of all names in the current ida db
+    self.primes = primes(1024*1024) # A list of all primes below 1024**2
+    self.db_name = db_name          # Database name
+    self.open_db()                  # Create database
     self.matched1 = set()
     self.matched2 = set()
     self.total_functions1 = None
     self.total_functions2 = None
     self.equal_callgraph = False
 
-    self.kfh = CKoretFuzzyHashing()
+    self.kfh = CKoretFuzzyHashing() # Initialize fuzzy hasher
     # With this block size we're sure it will only apply to functions
     # somehow big
     self.kfh.bsize = 32
@@ -715,7 +717,11 @@ class CBinDiff:
                         function_hash text,
                         bytes_sum integer) """
     cur.execute(sql)
-
+    sql=""" create table if not exists imageinfo (
+                id integer primary key,
+                base_address
+                )"""
+    cur.execute(sql)
     sql = """ create table if not exists program (
                 id integer primary key,
                 callgraph_primes text,
@@ -1430,21 +1436,37 @@ class CBinDiff:
       for til in til_names:
         self.add_program_data("til", til, None)
 
+  def export_imagebase(self):
+    imbase=self.get_base_address()
+    sql=""" insert into main.imageinfo (base_address) values (?)"""
+    cur=self.db_cursor()
+    cur.execute(sql,(imbase,))
+    cur.close()
   def do_export(self):
     i = 0
     callgraph_primes = 1
     callgraph_all_primes = {}
-    func_list = list(Functions(self.min_ea, self.max_ea))
+    func_list = list(Functions(self.min_ea, self.max_ea)) # Get all functions between user-specified addresses
     total_funcs = len(func_list)
-    t = time.time()
-    for func in func_list:
+    self.export_imagebase()
+    t = time.time()             # Save start time
+    for func in func_list:      # Start export
       i += 1
-      if i % 100 == 0 or i == 1:
+      if i % 100 == 0 or i == 1: # Update waitbox every 100 entries
         line = "Exported %d function(s) out of %d total.\nElapsed %d second(s), remaining ~%d second(s)"
         elapsed = time.time() - t
         remaining = (elapsed / i) * (total_funcs - i)
         replace_wait_box(line % (i, total_funcs, int(elapsed), int(remaining)))
       props = self.read_function(func)
+      '''
+The structure of returned tuple: (name, nodes, edges, indegree, outdegree, size, instructions, mnems, names,
+             proto, cc, prime, f, comment, true_name, bytes_hash, pseudo, pseudo_lines,
+             pseudo_hash1, pseudocode_primes, function_flags, asm, proto2,
+             pseudo_hash2, pseudo_hash3, len(strongly_connected), loops, rva, bb_topological,
+             strongly_connected_spp, clean_assembly, clean_pseudo, mnemonics_spp, switches,
+             function_hash, bytes_sum,
+             basic_blocks_data, bb_relations)
+'''
       if props == False:
         continue
 
@@ -1776,6 +1798,11 @@ class CBinDiff:
       db = "diff"
     cur = self.db_cursor()
     dones = set()
+    sql="""select ii.base_address
+           from %s.imageinfo ii"""%db
+    cur.execute(sql)
+    base_addr=cur.fetchone()[0]
+    log(base_addr)
     sql = """ select bb.address, ins.address, ins.mnemonic, ins.disasm
                 from %s.function_bblocks fb,
                      %s.bb_instructions bbins,
@@ -1789,6 +1816,7 @@ class CBinDiff:
                  and f.address = ?
                order by bb.address asc""" % (db, db, db, db, db)
     cur.execute(sql, (ea1,))
+    
     bb_blocks = {}
     for row in cur.fetchall():
       bb_ea = str(int(row[0]))
@@ -1801,9 +1829,9 @@ class CBinDiff:
       dones.add(ins_ea)
 
       try:
-        bb_blocks[bb_ea].append([ins_ea, mnem, dis])
+        bb_blocks[bb_ea].append([ins_ea, mnem, dis, base_addr])
       except KeyError:
-        bb_blocks[bb_ea] = [ [ins_ea, mnem, dis] ]
+        bb_blocks[bb_ea] = [ [ins_ea, mnem, dis, base_addr] ]
 
     sql = """ select (select address
                       from %s.basic_blocks
@@ -3460,11 +3488,11 @@ def _diff_or_export(use_ui, **options):
   global g_bindiff
 
   total_functions = len(list(Functions()))
-  if GetIdbPath() == "" or total_functions == 0:
+  if GetIdbPath() == "" or total_functions == 0: # Check if there is an idb resent or if there are any functions
     Warning("No IDA database opened or no function in the database.\nPlease open an IDA database and create some functions before running this script.")
     return
 
-  opts = BinDiffOptions(**options)
+  opts = BinDiffOptions(**options) # Get options for creating a database and diffing
   
   if use_ui:
     x = CBinDiffExporterSetup()
@@ -3556,25 +3584,25 @@ def diff_or_export_ui():
 def diff_or_export(**options):
   return _diff_or_export(False, **options)
 
-if __name__ == "__main__":
-  if os.getenv("DIAPHORA_AUTO") is not None:
-    file_out = os.getenv("DIAPHORA_EXPORT_FILE")
-    if file_out is None:
+if __name__ == "__main__":      # The start of diaphora
+  if os.getenv("DIAPHORA_AUTO") is not None: # Check if diaphora was already started (checks if the call is after ui)
+    file_out = os.getenv("DIAPHORA_EXPORT_FILE") # Get output file name
+    if file_out is None:                         # If the file is not present, raise exception, stop execution
       raise Exception("No export file specified!")
 
-    use_decompiler = os.getenv("DIAPHORA_USE_DECOMPILER")
+    use_decompiler = os.getenv("DIAPHORA_USE_DECOMPILER") # Check if the user asked to use decompiler
     if use_decompiler is None:
       use_decompiler = False
     bd = CBinDiff(file_out)
     bd.use_decompiler_always = use_decompiler
-    if os.path.exists(file_out):
+    if os.path.exists(file_out): # If exported database already exists, delete previous version
       if g_bindiff is not None:
         g_bindiff = None
 
       remove_file(file_out)
       log("Database %s removed" % repr(file_out))
 
-    bd.export()
+    bd.export()                 # Export Database
   else:
-    diff_or_export_ui()
+    diff_or_export_ui()         # If it's the first invocation during this session, show ui
 
